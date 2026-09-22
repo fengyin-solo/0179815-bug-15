@@ -213,11 +213,11 @@ body {
 }
 
 .time-input {
-  width: 60px;
+  width: 64px;
   min-width: 0;
   border: none;
   background: transparent;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--primary-color);
   text-align: center;
@@ -258,8 +258,11 @@ body {
 
 /* 范围滑块 */
 .range-slider-container {
-  padding: 10px 0;
+  /* 上下留出足够空间，保证手柄悬出轨道的部分及扩大的触摸热区不被裁切 */
+  padding: 22px 6px;
   margin: 0 5px;
+  /* 覆盖手柄/轨道通过伪元素扩大的触摸热区，保证拖拽时页面不滚动 */
+  touch-action: none;
 }
 
 .range-track {
@@ -268,6 +271,22 @@ body {
   background: linear-gradient(to right, #E8E8E8, #D0D0D0);
   border-radius: 3px;
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+  /* 触摸拖拽手柄/点按轨道时禁止页面滚动、缩放手势 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 扩大整条轨道的点按热区（轨道上下各 18px），不改变视觉外观 */
+.range-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -18px;
+  bottom: -18px;
+  z-index: 0;
 }
 
 .range-selected {
@@ -276,6 +295,7 @@ body {
   background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
   border-radius: 3px;
   box-shadow: 0 1px 3px rgba(139, 69, 19, 0.3);
+  z-index: 1;
 }
 
 .range-handle {
@@ -288,9 +308,25 @@ body {
   top: 50%;
   transform: translate(-50%, -50%);
   cursor: grab;
-  transition: all 0.2s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
   box-shadow: 0 2px 6px rgba(0,0,0,0.15);
   z-index: 2;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+/* 不可见的扩大触摸热区：手柄实际可点区域为约 44x44px（符合移动端推荐尺寸） */
+.range-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  z-index: -1;
 }
 
 .range-handle::after {
@@ -310,9 +346,16 @@ body {
   box-shadow: 0 3px 10px rgba(139, 69, 19, 0.3);
 }
 
-.range-handle:active {
+.range-handle:focus-visible {
+  box-shadow: 0 0 0 4px rgba(33, 150, 243, 0.35);
+}
+
+.range-handle:active,
+.range-handle.dragging {
   cursor: grabbing;
-  transform: translate(-50%, -50%) scale(1.1);
+  transform: translate(-50%, -50%) scale(1.25);
+  box-shadow: 0 4px 12px rgba(139, 69, 19, 0.4);
+  z-index: 3;
 }
 
 .range-handle.start {
@@ -329,6 +372,41 @@ body {
 
 .range-handle.end::after {
   background: var(--secondary-color);
+}
+
+/* 区间校验提示（错误原因 / 拖拽位置），位于滑块与选中时长之间 */
+.range-message {
+  display: none;
+  margin: 2px 8px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 0;
+}
+
+.range-message.visible {
+  display: block;
+}
+
+.range-message[data-type="warning"] {
+  color: #D84315;
+}
+
+.range-message[data-type="error"] {
+  color: #F44336;
+}
+
+.range-message[data-type="info"] {
+  color: var(--text-secondary);
+}
+
+/* 输入框处于非法中间态时给出明显反馈 */
+.time-input.invalid {
+  color: #D32F2F;
+}
+
+.time-value-wrapper:has(.time-input.invalid) {
+  background: #FDECEA;
+  box-shadow: 0 0 0 1px #F5A99E inset;
 }
 
 .duration-badge {
@@ -1093,6 +1171,14 @@ body {
 
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Toast 在手机上改为底部居中，避免遮挡或超出屏幕 */
+  .toast {
+    left: 12px !important;
+    right: 12px !important;
+    bottom: 16px !important;
+    text-align: center;
   }
 }
 

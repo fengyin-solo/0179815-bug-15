@@ -65,13 +65,18 @@
               </div>
             </div>
           </div>
-          <div class="range-slider-container">
+          <div class="range-slider-container" id="rangeSliderContainer">
             <div class="range-track" id="rangeTrack">
               <div class="range-selected" id="rangeSelected"></div>
-              <div class="range-handle start" id="handleStart" title="起始时间"></div>
-              <div class="range-handle end" id="handleEnd" title="结束时间"></div>
+              <div class="range-handle start" id="handleStart" role="slider" tabindex="0"
+                   aria-label="起始时间" aria-valuemin="0" aria-valuemax="0"
+                   aria-valuenow="0" aria-valuetext="0 毫秒" title="起始时间（可拖动或用方向键调整）"></div>
+              <div class="range-handle end" id="handleEnd" role="slider" tabindex="0"
+                   aria-label="结束时间" aria-valuemin="0" aria-valuemax="0"
+                   aria-valuenow="0" aria-valuetext="0 毫秒" title="结束时间（可拖动或用方向键调整）"></div>
             </div>
           </div>
+          <div class="range-message" id="rangeMessage" role="status" aria-live="polite"></div>
           <div class="duration-badge">
             <span class="duration-icon">⏱</span>
             <span>选中 <strong id="selectedDuration">0.000</strong> 秒</span>
