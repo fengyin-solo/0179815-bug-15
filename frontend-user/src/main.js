@@ -8,7 +8,7 @@ import { Logger } from './utils/logger.js';
 const logger = new Logger('Main');
 
 // 应用初始化
-class App {
+export class App {
   constructor() {
     this.audioAnalyzer = null;
     this.chartManager = null;
@@ -19,6 +19,9 @@ class App {
     this.currentAnalysisResult = null;
     this.currentFileName = '';
     this.selectedRecordId = null;
+    this.currentDurationMs = 0;
+    this.lastValidRange = { start: 0, end: 0 };
+    this.RANGE_STORAGE_KEY = 'guqin_range_selection';
   }
 
   async init() {
@@ -78,8 +81,11 @@ class App {
     // 区间选择
     const startTime = document.getElementById('startTime');
     const endTime = document.getElementById('endTime');
+    // 输入过程中实时渲染滑块（不打断输入），编辑完成后再严格校验
     startTime.addEventListener('input', () => this.updateRangeSlider());
     endTime.addEventListener('input', () => this.updateRangeSlider());
+    startTime.addEventListener('change', () => this.handleRangeInputChange());
+    endTime.addEventListener('change', () => this.handleRangeInputChange());
 
     // 范围滑块拖拽
     this.initRangeSlider();
@@ -127,12 +133,20 @@ class App {
       document.getElementById('totalDuration').textContent = duration.toFixed(3);
 
       // 设置区间选择
-      document.getElementById('startTime').value = 0;
-      document.getElementById('startTime').max = durationMs;
-      document.getElementById('endTime').value = durationMs;
-      document.getElementById('endTime').max = durationMs;
+      this.currentDurationMs = durationMs;
+      const startInput = document.getElementById('startTime');
+      const endInput = document.getElementById('endTime');
+      startInput.max = durationMs;
+      endInput.max = durationMs;
+
+      // 优先恢复上次保存的区间，否则默认选中整个音频
+      if (!this.restoreRangeSelection()) {
+        startInput.value = 0;
+        endInput.value = durationMs;
+      }
 
       this.updateRangeSlider();
+      this.persistRangeSelection();
 
       // 启用分析按钮
       document.getElementById('analyzeBtn').disabled = false;
@@ -150,6 +164,8 @@ class App {
     this.audioBuffer = null;
     this.currentAnalysisResult = null;
     this.currentFileName = '';
+    this.currentDurationMs = 0;
+    this.lastValidRange = { start: 0, end: 0 };
     document.getElementById('audioInput').value = '';
     document.getElementById('fileInfo').style.display = 'none';
     document.getElementById('uploadArea').style.display = 'block';
@@ -159,7 +175,16 @@ class App {
     document.getElementById('emptyState').style.display = 'flex';
     document.getElementById('fundamentalInfo').style.display = 'none';
     document.getElementById('saveRecordSection').style.display = 'none';
-    
+
+    // 重置区间选择 UI（保留 localStorage 中的记录，重新上传同一文件时仍可恢复）
+    const startInput = document.getElementById('startTime');
+    const endInput = document.getElementById('endTime');
+    startInput.value = 0;
+    endInput.value = 0;
+    startInput.removeAttribute('max');
+    endInput.removeAttribute('max');
+    this.updateRangeSlider();
+
     // 清除图表
     this.chartManager.clearAllCharts();
 
@@ -172,70 +197,228 @@ class App {
     const handleEnd = document.getElementById('handleEnd');
     let isDragging = null;
 
+    const getMaxMs = () => parseInt(document.getElementById('endTime').max) || 1000;
+
+    const getClientX = (e) => {
+      if (e.touches && e.touches.length) return e.touches[0].clientX;
+      if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientX;
+      return e.clientX;
+    };
+
     const updateFromSlider = (clientX) => {
       const rect = track.getBoundingClientRect();
       const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const maxMs = parseInt(document.getElementById('endTime').max) || 1000;
+      const maxMs = getMaxMs();
       const value = Math.round(percent * maxMs);
 
       if (isDragging === 'start') {
-        const endValue = parseInt(document.getElementById('endTime').value);
-        if (value < endValue) {
-          document.getElementById('startTime').value = value;
-        }
+        const endValue = parseInt(document.getElementById('endTime').value) || 0;
+        document.getElementById('startTime').value = Math.max(0, Math.min(value, endValue - 1));
       } else if (isDragging === 'end') {
-        const startValue = parseInt(document.getElementById('startTime').value);
-        if (value > startValue) {
-          document.getElementById('endTime').value = value;
-        }
+        const startValue = parseInt(document.getElementById('startTime').value) || 0;
+        document.getElementById('endTime').value = Math.min(maxMs, Math.max(value, startValue + 1));
       }
 
       this.updateRangeSlider();
     };
 
-    handleStart.addEventListener('mousedown', () => isDragging = 'start');
-    handleEnd.addEventListener('mousedown', () => isDragging = 'end');
+    // 点击轨道空白处时，移动距离点击位置较近的手柄
+    const nearestHandle = (clientX) => {
+      const rect = track.getBoundingClientRect();
+      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const maxMs = getMaxMs();
+      const startPercent = (parseInt(document.getElementById('startTime').value) || 0) / maxMs;
+      const endPercent = (parseInt(document.getElementById('endTime').value) || 0) / maxMs;
+      return Math.abs(percent - startPercent) <= Math.abs(percent - endPercent) ? 'start' : 'end';
+    };
 
-    document.addEventListener('mousemove', (e) => {
-      if (isDragging) {
-        updateFromSlider(e.clientX);
+    const beginDrag = (handle, e) => {
+      if (!this.audioBuffer) {
+        this.uiController.showToast('请先上传音频文件，再拖动选择区间', 'warning');
+        return;
       }
-    });
+      isDragging = handle;
+      document.body.classList.add('range-dragging');
+      if (e.cancelable) e.preventDefault();
+      updateFromSlider(getClientX(e));
+    };
 
-    document.addEventListener('mouseup', () => {
+    const moveDrag = (e) => {
+      if (!isDragging) return;
+      if (e.cancelable) e.preventDefault();
+      updateFromSlider(getClientX(e));
+    };
+
+    const endDrag = () => {
+      if (!isDragging) return;
       isDragging = null;
-    });
+      document.body.classList.remove('range-dragging');
+      this.persistRangeSelection();
+    };
+
+    const bindHandle = (handle, name) => {
+      if (window.PointerEvent) {
+        handle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          beginDrag(name, e);
+        });
+      } else {
+        handle.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+          beginDrag(name, e);
+        });
+        // passive: false 才能 preventDefault，阻止拖动时页面滚动
+        handle.addEventListener('touchstart', (e) => {
+          e.stopPropagation();
+          beginDrag(name, e);
+        }, { passive: false });
+      }
+    };
+
+    bindHandle(handleStart, 'start');
+    bindHandle(handleEnd, 'end');
+
+    if (window.PointerEvent) {
+      track.addEventListener('pointerdown', (e) => beginDrag(nearestHandle(getClientX(e)), e));
+      document.addEventListener('pointermove', moveDrag);
+      document.addEventListener('pointerup', endDrag);
+      document.addEventListener('pointercancel', endDrag);
+    } else {
+      track.addEventListener('mousedown', (e) => beginDrag(nearestHandle(getClientX(e)), e));
+      document.addEventListener('mousemove', moveDrag);
+      document.addEventListener('mouseup', endDrag);
+
+      track.addEventListener('touchstart', (e) => beginDrag(nearestHandle(getClientX(e)), e), { passive: false });
+      document.addEventListener('touchmove', moveDrag, { passive: false });
+      document.addEventListener('touchend', endDrag);
+      document.addEventListener('touchcancel', endDrag);
+    }
   }
 
+  /**
+   * 根据输入框当前值渲染滑块位置与选中时长。
+   * 只读取不篡改输入框，滑块、选中区、时长显示始终与输入框数字一致；
+   * 区间合法时记录为最近有效值，供校验失败时恢复。
+   */
   updateRangeSlider() {
-    let startTime = parseInt(document.getElementById('startTime').value) || 0;
-    let endTime = parseInt(document.getElementById('endTime').value) || 0;
-    const maxTime = parseInt(document.getElementById('endTime').max) || 1000;
+    const startInput = document.getElementById('startTime');
+    const endInput = document.getElementById('endTime');
+    const maxTime = parseInt(endInput.max) || 1000;
 
-    // 确保起始时间不大于结束时间
-    if (startTime > endTime) {
-      // 交换值
-      const temp = startTime;
-      startTime = endTime;
-      endTime = temp;
-      document.getElementById('startTime').value = startTime;
-      document.getElementById('endTime').value = endTime;
-    }
+    let startTime = parseInt(startInput.value);
+    let endTime = parseInt(endInput.value);
+    // 输入中途（如清空输入框）无法解析时，按最近有效值渲染，不打扰输入
+    if (isNaN(startTime)) startTime = this.lastValidRange.start;
+    if (isNaN(endTime)) endTime = this.lastValidRange.end;
 
-    // 确保值在有效范围内
-    startTime = Math.max(0, Math.min(startTime, maxTime));
-    endTime = Math.max(0, Math.min(endTime, maxTime));
-
-    const startPercent = (startTime / maxTime) * 100;
-    const endPercent = (endTime / maxTime) * 100;
+    const startPercent = Math.max(0, Math.min(100, (startTime / maxTime) * 100));
+    const endPercent = Math.max(0, Math.min(100, (endTime / maxTime) * 100));
 
     document.getElementById('handleStart').style.left = `${startPercent}%`;
     document.getElementById('handleEnd').style.left = `${endPercent}%`;
-    document.getElementById('rangeSelected').style.left = `${startPercent}%`;
-    document.getElementById('rangeSelected').style.width = `${Math.max(0, endPercent - startPercent)}%`;
+
+    const selected = document.getElementById('rangeSelected');
+    selected.style.left = `${Math.min(startPercent, endPercent)}%`;
+    selected.style.width = `${Math.abs(endPercent - startPercent)}%`;
 
     const durationSec = Math.max(0, endTime - startTime) / 1000;
     document.getElementById('selectedDuration').textContent = durationSec.toFixed(3);
+
+    if (startTime >= 0 && endTime <= maxTime && startTime < endTime) {
+      this.lastValidRange = { start: startTime, end: endTime };
+    }
+  }
+
+  /**
+   * 校验区间输入，返回错误原因；合法时返回 null
+   */
+  validateRangeInput(startTime, endTime, maxTime) {
+    if (isNaN(startTime) || isNaN(endTime)) {
+      return '请输入有效的数字（单位：毫秒）';
+    }
+    if (startTime < 0 || endTime < 0) {
+      return '时间不能为负数，请输入 0 以上的数值';
+    }
+    if (startTime > maxTime || endTime > maxTime) {
+      return `超出音频时长范围，请输入 0 ~ ${maxTime} ms 之间的数值`;
+    }
+    if (startTime >= endTime) {
+      return '起始时间必须小于结束时间';
+    }
+    return null;
+  }
+
+  /**
+   * 输入框编辑完成时校验区间：非法则说明原因并恢复为最近有效值，允许重新输入
+   */
+  handleRangeInputChange() {
+    const startInput = document.getElementById('startTime');
+    const endInput = document.getElementById('endTime');
+    const maxTime = parseInt(endInput.max) || 1000;
+
+    const error = this.validateRangeInput(
+      parseInt(startInput.value),
+      parseInt(endInput.value),
+      maxTime
+    );
+
+    if (error) {
+      this.uiController.showToast(`${error}，已恢复为之前的有效区间`, 'warning');
+      startInput.value = this.lastValidRange.start;
+      endInput.value = this.lastValidRange.end;
+      this.updateRangeSlider();
+      return;
+    }
+
+    this.updateRangeSlider();
+    this.persistRangeSelection();
+  }
+
+  /**
+   * 将当前区间选择保存到 localStorage，重新打开页面后可恢复
+   */
+  persistRangeSelection() {
+    if (!this.currentFileName) return;
+    try {
+      const data = {
+        fileName: this.currentFileName,
+        durationMs: this.currentDurationMs,
+        startMs: this.lastValidRange.start,
+        endMs: this.lastValidRange.end
+      };
+      localStorage.setItem(this.RANGE_STORAGE_KEY, JSON.stringify(data));
+      logger.info('区间选择已保存', data);
+    } catch (error) {
+      logger.error('保存区间选择失败', error);
+    }
+  }
+
+  /**
+   * 恢复当前音频文件上次的区间选择
+   * @returns {boolean} 是否成功恢复
+   */
+  restoreRangeSelection() {
+    try {
+      const data = localStorage.getItem(this.RANGE_STORAGE_KEY);
+      if (!data) return false;
+
+      const saved = JSON.parse(data);
+      // 仅当文件名相同且音频时长基本一致时才恢复，避免套用到其他音频上
+      if (saved.fileName !== this.currentFileName) return false;
+      if (Math.abs(saved.durationMs - this.currentDurationMs) > 1000) return false;
+
+      const startMs = Math.max(0, Math.min(saved.startMs, this.currentDurationMs));
+      const endMs = Math.max(0, Math.min(saved.endMs, this.currentDurationMs));
+      if (this.validateRangeInput(startMs, endMs, this.currentDurationMs)) return false;
+
+      document.getElementById('startTime').value = startMs;
+      document.getElementById('endTime').value = endMs;
+      logger.info('已恢复上次的区间选择', { startMs, endMs });
+      return true;
+    } catch (error) {
+      logger.error('恢复区间选择失败', error);
+      return false;
+    }
   }
 
   async analyzeAudio() {
@@ -244,11 +427,12 @@ class App {
       return;
     }
 
-    const startMs = parseInt(document.getElementById('startTime').value) || 0;
-    const endMs = parseInt(document.getElementById('endTime').value) || 0;
+    const startMs = parseInt(document.getElementById('startTime').value);
+    const endMs = parseInt(document.getElementById('endTime').value);
 
-    if (startMs >= endMs) {
-      alert('请选择有效的时间区间');
+    const rangeError = this.validateRangeInput(startMs, endMs, this.currentDurationMs);
+    if (rangeError) {
+      this.uiController.showToast(`无法分析：${rangeError}`, 'error');
       return;
     }
 
